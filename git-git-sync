@@ -1,0 +1,152 @@
+#!/usr/bin/env node
+const path = require('path')
+const toString = require('stream-to-string')
+const toStream = require('string-to-stream')
+const createServer = require('auto-sni')
+const express = require('express')
+const fs = require('fs')
+const { execFile } = require('child_process')
+const serverDestroy = require('server-destroy')
+const Promise = require('bluebird')
+const ports = {
+  https: process.env.HTTPS_PORT ? parseInt(process.env.HTTPS_PORT) : 443,
+  http: process.env.HTTP_PORT ? parseInt(process.env.HTTP_PORT) : 80
+}
+
+const SYNC_SCRIPT = path.join(__dirname, 'sync.sh')
+const LOG_FILE = path.resolve('.debug.log')
+
+function syncFolder (folderData) {
+  return Promise.mapSeries(folderData.heads, (head) => {
+    return new Promise((resolve, reject) => {
+      const proc = execFile('/bin/bash', [SYNC_SCRIPT], {
+        cwd: path.join(process.cwd(), folderData.folder),
+        stdio: 'pipe'
+      })
+      var result = '';
+      toStream(head + '\n').pipe(proc.stdin)
+      proc.stdout.on('data', output => { result += output.toString() })
+      proc.stdout.on('error', err => fs.appendFileSync(LOG_FILE, err || ''))
+      proc.stderr.on('data', output => { result += output.toString() })
+      proc.stderr.on('error', err => fs.appendFileSync(LOG_FILE, err || ''))
+      proc.on('exit', function (code) {
+        try {
+          proc.kill()
+        } catch (e) {
+          console.log(e)
+        }
+        ;(code === 0) ? resolve(result) : reject('process error ' + code + '\n' + result)
+      })
+    })
+  })
+}
+
+var _promises = {}
+function requestUpdate (secret, secretData) {
+  var promise = _promises[secret]
+  if (!promise) {
+    promise = syncFolder(secretData)
+      .then( output => { delete _promises[secret]; return output })
+      .catch(output => { delete _promises[secret]; return Promise.reject(output) })
+    _promises[secret] = promise
+  }
+  return promise
+}
+
+function finish () {
+  console.log('done.')
+  process.exit(0)
+}
+
+var error = false
+function printErr (msg) {
+  error = true
+  console.error(msg)
+}
+if (!process.env.EMAIL) {
+  printErr('EMAIL environment variable required.')
+}
+if (!process.env.DOMAIN) {
+  printErr('DOMAIN environment variable required.')
+}
+if (!/^\s*true\s*$/ig.test(process.env.AGREE_TOS)) {
+  printErr('AGREE_TOS environment variable needs to be set to "true" to approve.')
+}
+console.log('Loading config ...')
+toString(process.argv[2] ? fs.createReadStream(process.argv[2]) : process.stdin, (err, data) => {
+  if (err) {
+    printErr('Error while reading from stdin:')
+    printErr(err)
+  } else {
+    try {
+      data = JSON.parse(data)
+    } catch (e) {
+      console.log(data)
+      printErr(e)
+    }
+  }
+  if (error) {
+    process.exit(1)
+  }
+  console.log(`Accepting from domain: ${process.env.DOMAIN}`)
+  console.log(`Syncing with script: ${SYNC_SCRIPT}`)
+  console.log(`Piping error output to: ${LOG_FILE}`)
+  console.log('Waiting for input ...')
+  console.log('Starting server...')
+  const app = express()
+
+  Object.keys(data).forEach(secret => {
+    console.log(`Enabling secret "${secret.substr(0, 4)}..."`)
+    app.get('/' + secret, (req, res) => {
+      requestUpdate(secret, data[secret])
+        .then(output => {
+          res.writeHead(200, {'Content-Type': 'text/plain'});
+          res.end(String(output))
+        })
+        .catch(e => {
+          try {
+            fs.appendFileSync(LOG_FILE, String(e.stack || e) + '\n')
+          } catch (e) {
+            // eat error
+          }
+          res.writeHead(500, {'Content-Type': 'text/plain'});
+          res.end('Error')
+        })
+        .catch(e => {
+          console.log(`Error while writing: ${e.stack || e}`)
+        })
+    })
+  })
+
+  const server = createServer({
+    email: process.env.EMAIL,
+    agreeTos: true,
+    domains: [process.env.DOMAIN],
+    redirectCode: 301,
+    forceSSL: true,
+    ports: ports
+  }, app).once('listening', () => {
+    console.log(`Listening to ports ${ports.http} and ${ports.https}.`)
+  })
+
+  serverDestroy(server)
+
+  var closing = 0
+  process.on('SIGINT', () => {
+    closing += 1
+    if (closing > 3) {
+      console.log('Forcing to close')
+      return process.exit(1)
+    }
+    if (closing > 1) {
+      console.log('Force closing in ' + (4 - closing))
+      return
+    }
+    console.log('\nReceived SIGINT')
+    console.log('Closing server ...')
+    server.destroy(() => {
+      console.log('Waiting for last process to finish ...')
+      Promise.props(_promises).then(finish).catch(finish)
+    })
+  })
+})
