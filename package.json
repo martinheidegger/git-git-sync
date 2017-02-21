@@ -13,7 +13,7 @@
     "sync"
   ],
   "author": "Martin Heidegger <martin.heidegger@gmail.com>",
-  "license": "ISC",
+  "license": "MIT",
   "dependencies": {
     "auto-sni": "^1.5.1",
     "bluebird": "^3.4.7",
