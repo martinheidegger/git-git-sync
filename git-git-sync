@@ -20,7 +20,10 @@ function syncFolder (folder) {
   return new Promise((resolve, reject) => {
     const proc = execFile('/bin/bash', [SYNC_SCRIPT], {
       cwd: path.join(process.cwd(), folder),
-      stdio: 'pipe'
+      stdio: 'pipe',
+      env: {
+        LOCK: path.resolve('.lock')
+      }
     })
     var result = '';
     proc.stdout.on('data', output => { result += output.toString() })
