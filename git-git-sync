@@ -97,7 +97,7 @@ toString(process.argv[2] ? fs.createReadStream(process.argv[2]) : process.stdin,
 
   Object.keys(data).forEach(secret => {
     console.log(`Enabling secret "${secret.substr(0, 4)}..."`)
-    app.get('/' + secret, (req, res) => {
+    app.all('/' + secret, (req, res) => {
       requestUpdate(secret, data[secret])
         .then(output => {
           res.writeHead(200, {'Content-Type': 'text/plain'});
