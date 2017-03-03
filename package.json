@@ -1,6 +1,6 @@
 {
   "name": "git-git-sync",
-  "version": "0.0.2",
+  "version": "0.1.0",
   "description": "Synching one git repo to another git repo",
   "main": "./git-git-sync",
   "bin": {
